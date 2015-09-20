@@ -1,4 +1,4 @@
-package com.hamersaw.distributed_file_system_v2.message;
+package com.hamersaw.erasure_coding_file_system.message;
 
 public class ErrorMsg extends Message {
 	protected String msg;

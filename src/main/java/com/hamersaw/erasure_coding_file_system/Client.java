@@ -1,4 +1,4 @@
-package com.hamersaw.distributed_file_system_v2;
+package com.hamersaw.erasure_coding_file_system;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -15,13 +15,13 @@ import java.util.List;
 import java.util.logging.Logger;
 import java.util.Scanner;
 
-import com.hamersaw.distributed_file_system_v2.message.ErrorMsg;
-import com.hamersaw.distributed_file_system_v2.message.Message;
-import com.hamersaw.distributed_file_system_v2.message.RequestChunkMsg;
-import com.hamersaw.distributed_file_system_v2.message.RequestChunkServerMsg;
-import com.hamersaw.distributed_file_system_v2.message.ReplyChunkMsg;
-import com.hamersaw.distributed_file_system_v2.message.ReplyChunkServerMsg;
-import com.hamersaw.distributed_file_system_v2.message.WriteChunkMsg;
+import com.hamersaw.erasure_coding_file_system.message.ErrorMsg;
+import com.hamersaw.erasure_coding_file_system.message.Message;
+import com.hamersaw.erasure_coding_file_system.message.RequestChunkMsg;
+import com.hamersaw.erasure_coding_file_system.message.RequestChunkServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyChunkMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyChunkServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.WriteChunkMsg;
 
 public class Client {
 	private static final Logger LOGGER = Logger.getLogger(Client.class.getCanonicalName());

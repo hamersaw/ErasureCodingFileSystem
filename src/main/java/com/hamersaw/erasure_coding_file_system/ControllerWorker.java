@@ -1,4 +1,4 @@
-package com.hamersaw.distributed_file_system_v2;
+package com.hamersaw.erasure_coding_file_system;
 
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
@@ -8,13 +8,13 @@ import java.net.Socket;
 import java.util.List;
 import java.util.logging.Logger;
 
-import com.hamersaw.distributed_file_system_v2.message.ErrorMsg;
-import com.hamersaw.distributed_file_system_v2.message.ChunkServerHeartbeatMsg;
-import com.hamersaw.distributed_file_system_v2.message.DataCorruptionMsg;
-import com.hamersaw.distributed_file_system_v2.message.ForwardChunkMsg;
-import com.hamersaw.distributed_file_system_v2.message.Message;
-import com.hamersaw.distributed_file_system_v2.message.RequestChunkServerMsg;
-import com.hamersaw.distributed_file_system_v2.message.ReplyChunkServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.ErrorMsg;
+import com.hamersaw.erasure_coding_file_system.message.ChunkServerHeartbeatMsg;
+import com.hamersaw.erasure_coding_file_system.message.DataCorruptionMsg;
+import com.hamersaw.erasure_coding_file_system.message.ForwardChunkMsg;
+import com.hamersaw.erasure_coding_file_system.message.Message;
+import com.hamersaw.erasure_coding_file_system.message.RequestChunkServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyChunkServerMsg;
 
 public class ControllerWorker implements Runnable {
 	private static Logger LOGGER = Logger.getLogger(ControllerWorker.class.getCanonicalName());

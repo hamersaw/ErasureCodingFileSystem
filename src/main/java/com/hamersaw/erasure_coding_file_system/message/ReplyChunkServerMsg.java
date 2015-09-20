@@ -1,8 +1,8 @@
-package com.hamersaw.distributed_file_system_v2.message;
+package com.hamersaw.erasure_coding_file_system.message;
 
 import java.util.List;
 
-import com.hamersaw.distributed_file_system_v2.ChunkServerMetadata;
+import com.hamersaw.erasure_coding_file_system.ChunkServerMetadata;
 
 public class ReplyChunkServerMsg extends Message {
 	private List<ChunkServerMetadata> chunkServers;

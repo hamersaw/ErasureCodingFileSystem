@@ -1,4 +1,4 @@
-package com.hamersaw.distributed_file_system_v2;
+package com.hamersaw.erasure_coding_file_system;
 
 import java.io.Serializable;
 
