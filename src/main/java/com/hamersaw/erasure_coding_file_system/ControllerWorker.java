@@ -9,12 +9,10 @@ import java.util.List;
 import java.util.logging.Logger;
 
 import com.hamersaw.erasure_coding_file_system.message.ErrorMsg;
-import com.hamersaw.erasure_coding_file_system.message.ChunkServerHeartbeatMsg;
-import com.hamersaw.erasure_coding_file_system.message.DataCorruptionMsg;
-import com.hamersaw.erasure_coding_file_system.message.ForwardChunkMsg;
+import com.hamersaw.erasure_coding_file_system.message.ShardServerHeartbeatMsg;
 import com.hamersaw.erasure_coding_file_system.message.Message;
-import com.hamersaw.erasure_coding_file_system.message.RequestChunkServerMsg;
-import com.hamersaw.erasure_coding_file_system.message.ReplyChunkServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.RequestShardServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyShardServerMsg;
 
 public class ControllerWorker implements Runnable {
 	private static Logger LOGGER = Logger.getLogger(ControllerWorker.class.getCanonicalName());
@@ -38,72 +36,21 @@ public class ControllerWorker implements Runnable {
 			Message replyMsg = null;
 			try {
 				switch(requestMsg.getMsgType()) {
-				case Message.REQUEST_CHUNK_SERVER_MSG:
-					LOGGER.info("Received message of type 'REQUEST_CHUNK_SERVER_MSG' from '" + socket.getInetAddress() + ":" + socket.getPort());
-					RequestChunkServerMsg rcsMsg = (RequestChunkServerMsg) requestMsg;
+				case Message.REQUEST_SHARD_SERVER_MSG:
+					LOGGER.info("Received message of type 'REQUEST_SHARD_SERVER_MSG' from '" + socket.getInetAddress() + ":" + socket.getPort());
+					RequestShardServerMsg rcsMsg = (RequestShardServerMsg) requestMsg;
 
 					try {
-						replyMsg = new ReplyChunkServerMsg(controller.requestChunkServers(rcsMsg.getFilename(), rcsMsg.getChunkNum(), rcsMsg.getWriteOperation()));
+						replyMsg = new ReplyShardServerMsg(controller.requestShardServer(rcsMsg.getFilename(), rcsMsg.getChunkNum(), rcsMsg.getShardNum(), rcsMsg.getWriteOperation()));
 					} catch(Exception e) {
 						replyMsg = new ErrorMsg(e.getMessage());
 					}
 
 					break;
-				case Message.CHUNK_SERVER_HEARTBEAT_MSG:
-					ChunkServerHeartbeatMsg cshMsg = (ChunkServerHeartbeatMsg) requestMsg;
-					cshMsg.getChunkServerMetadata().setInetAddress(socket.getInetAddress()); //TODO fix this up
-					controller.updateChunkServer(cshMsg.getChunkServerMetadata(), cshMsg.getChunks());
-					break;
-				case Message.DATA_CORRUPTION_MSG:
-					LOGGER.info("Received message of type 'DATA_CORRUPTION_MSG' from '" + socket.getInetAddress() + ":" + socket.getPort());
-					DataCorruptionMsg dcMsg = (DataCorruptionMsg) requestMsg;
-
-					//remove data chunk from controller metadata
-					controller.removeChunk(dcMsg.getFilename(), dcMsg.getChunkNum(), socket.getInetAddress(), dcMsg.getPort());
-
-					//find a valid server to send the chunk
-					ForwardChunkMsg fcMsg = new ForwardChunkMsg(dcMsg.getFilename(), dcMsg.getChunkNum(), socket.getInetAddress(), dcMsg.getPort());
-					List<ChunkServerMetadata> list = controller.requestChunkServers(fcMsg.getFilename(), fcMsg.getChunkNum(), false);
-					boolean success = false;
-					for(ChunkServerMetadata chunkServerMetadata : list) {
-						int hostName = socket.getInetAddress().getHostName().compareTo(chunkServerMetadata.getInetAddress().getHostName());
-						int hostAddress = socket.getInetAddress().getHostAddress().compareTo(chunkServerMetadata.getInetAddress().getHostAddress());
-
-						if(fcMsg.getPort() == chunkServerMetadata.getPort() && (hostName == 0 || hostAddress == 0)) {
-							continue;
-						}
-
-						//send forward chunk message
-						Socket clientSocket = new Socket(chunkServerMetadata.getInetAddress(), chunkServerMetadata.getPort());
-						ObjectOutputStream socketOut = new ObjectOutputStream(clientSocket.getOutputStream());
-						socketOut.writeObject(fcMsg);
-
-						//read response messasge
-						ObjectInputStream socketIn = new ObjectInputStream(clientSocket.getInputStream());
-						Message message = (Message) socketIn.readObject();
-
-						if(message.getMsgType() == Message.ERROR_MSG) {
-							LOGGER.severe(((ErrorMsg)message).getMsg());
-							continue;
-						} else if(message.getMsgType() != Message.SUCCESS_MSG) {
-							LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.SUCCESS_MSG + "' and recieved '" + message.getMsgType() + "'");
-							continue;
-						}
-
-						clientSocket.close();
-						success = true;
-						break;
-					}
-
-					if(!success) {
-						LOGGER.severe(
-							"Unable to forward chunk '" 
-							+ fcMsg.getFilename() + ":" + fcMsg.getChunkNum() 
-							+ "' to chunk server '" 
-							+ fcMsg.getInetAddress() + ":" + fcMsg.getPort() + "'"
-						);
-					}
-
+				case Message.SHARD_SERVER_HEARTBEAT_MSG:
+					ShardServerHeartbeatMsg sshMsg = (ShardServerHeartbeatMsg) requestMsg;
+					sshMsg.getShardServerMetadata().setInetAddress(socket.getInetAddress()); //TODO fix this up
+					controller.updateShardServer(sshMsg.getShardServerMetadata(), sshMsg.getShards());
 					break;
 				default:
 					LOGGER.severe("Unrecognized request message type '" + requestMsg.getMsgType() + "'");

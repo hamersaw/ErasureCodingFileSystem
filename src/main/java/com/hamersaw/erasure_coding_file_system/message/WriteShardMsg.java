@@ -1,15 +1,18 @@
 package com.hamersaw.erasure_coding_file_system.message;
 
-public class ReplyChunkMsg extends Message {
+import java.util.List;
+
+public class WriteShardMsg extends Message {
 	private String filename;
-	private int chunkNum, length;
+	private int chunkNum, shardNum, length;
 	private byte[] bytes;
 	private boolean eof;
 	private long timestamp;
 
-	public ReplyChunkMsg(String filename, int chunkNum, int length, byte[] bytes, boolean eof, long timestamp) {
+	public WriteShardMsg(String filename, int chunkNum, int shardNum, int length, byte[] bytes, boolean eof, long timestamp) {
 		this.filename = filename;
 		this.chunkNum = chunkNum;
+		this.shardNum = shardNum;
 		this.length = length;
 		this.bytes = bytes;
 		this.eof = eof;
@@ -22,6 +25,10 @@ public class ReplyChunkMsg extends Message {
 
 	public int getChunkNum() {
 		return chunkNum;
+	}
+
+	public int getShardNum() {
+		return shardNum;
 	}
 
 	public int getLength() {
@@ -42,6 +49,6 @@ public class ReplyChunkMsg extends Message {
 
 	@Override
 	public int getMsgType() {
-		return REPLY_CHUNK_MSG;
+		return WRITE_SHARD_MSG;
 	}
 }

@@ -15,17 +15,19 @@ import java.util.List;
 import java.util.logging.Logger;
 import java.util.Scanner;
 
+import com.backblaze.erasure.ReedSolomon;
+
 import com.hamersaw.erasure_coding_file_system.message.ErrorMsg;
 import com.hamersaw.erasure_coding_file_system.message.Message;
-import com.hamersaw.erasure_coding_file_system.message.RequestChunkMsg;
-import com.hamersaw.erasure_coding_file_system.message.RequestChunkServerMsg;
-import com.hamersaw.erasure_coding_file_system.message.ReplyChunkMsg;
-import com.hamersaw.erasure_coding_file_system.message.ReplyChunkServerMsg;
-import com.hamersaw.erasure_coding_file_system.message.WriteChunkMsg;
+import com.hamersaw.erasure_coding_file_system.message.RequestShardMsg;
+import com.hamersaw.erasure_coding_file_system.message.RequestShardServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyShardMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyShardServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.WriteShardMsg;
 
 public class Client {
 	private static final Logger LOGGER = Logger.getLogger(Client.class.getCanonicalName());
-	public static final int CHUNK_SIZE = 65536;
+	public static final int CHUNK_SIZE = 60000, DATA_SHARDS = 6, PARITY_SHARDS = 3, TOTAL_SHARDS = DATA_SHARDS + PARITY_SHARDS, SHARD_SIZE = CHUNK_SIZE / DATA_SHARDS;
 
 	public static void main(String[] args) {
 		String controllerHostName = null;
@@ -67,47 +69,66 @@ public class Client {
 						continue;
 					}
 
-					//loop through file ever 64KB
-					byte[] bytes = new byte[CHUNK_SIZE];
-					int length, chunkNum = 0;
-					while((length = in.read(bytes)) != -1) {
-						//write chunk server request message
-						Socket socket = new Socket(controllerHostName, controllerPort);
-						ObjectOutputStream socketOut = new ObjectOutputStream(socket.getOutputStream());
-						RequestChunkServerMsg rcsMsg = new RequestChunkServerMsg(filename, chunkNum, true);
-						socketOut.writeObject(rcsMsg);
-
-						//read chunk server reply message
-						ObjectInputStream socketIn = new ObjectInputStream(socket.getInputStream());
-						Message replyMsg = (Message) socketIn.readObject();
-						socket.close();
-
-						if(replyMsg.getMsgType() == Message.ERROR_MSG) {
-							LOGGER.severe(((ErrorMsg)replyMsg).getMsg());
-							return;
-						} else if(replyMsg.getMsgType() != Message.REPLY_CHUNK_SERVER_MSG) {
-							LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.REPLY_CHUNK_SERVER_MSG + "' and recieved '" + replyMsg.getMsgType() + "'");
-							return;
-						}
-
+					//loop through file
+					byte[] chunkBytes = new byte[CHUNK_SIZE];
+					int chunkLength, chunkNum = 0;
+					while((chunkLength = in.read(chunkBytes)) != -1) {
 						//figure out if this is the end of the file
-						boolean eof;
-						if(CHUNK_SIZE * chunkNum + length == fileLength) {
-							eof = true;
-						} else {
-							eof = false;
+						boolean eof = (CHUNK_SIZE * chunkNum + chunkLength == fileLength);
+
+						//fill shards
+						byte[][] shardBytes = new byte[TOTAL_SHARDS][SHARD_SIZE];
+						for(int i=0; i<DATA_SHARDS; i++) {
+							System.arraycopy(chunkBytes, i*SHARD_SIZE, shardBytes[i], 0, SHARD_SIZE);
 						}
 
-						//send chunk payload message
-						List<ChunkServerMetadata> chunkServers = ((ReplyChunkServerMsg) replyMsg).getChunkServers();
-						ChunkServerMetadata chunkServerMetadata = chunkServers.get(0);
-						chunkServers.remove(0);
-						WriteChunkMsg wcMsg = new WriteChunkMsg(filename, chunkNum, length, bytes, eof, timestamp, chunkServers);
+						//encode shards
+						ReedSolomon reedSolomon = ReedSolomon.create(DATA_SHARDS, PARITY_SHARDS);
+						reedSolomon.encodeParity(shardBytes, 0, SHARD_SIZE);
 
-						Socket chunkServerSocket = new Socket(chunkServerMetadata.getInetAddress(), chunkServerMetadata.getPort());
-						ObjectOutputStream chunkServerOut = new ObjectOutputStream(chunkServerSocket.getOutputStream());
-						chunkServerOut.writeObject(wcMsg);
-						chunkServerSocket.close();
+						//loop over shards and write to each ShardServer
+						for(int shardNum=0; shardNum<shardBytes.length; shardNum++) {
+							//write shard server request message
+							Socket socket = new Socket(controllerHostName, controllerPort);
+							ObjectOutputStream socketOut = new ObjectOutputStream(socket.getOutputStream());
+							RequestShardServerMsg rcsMsg = new RequestShardServerMsg(filename, chunkNum, shardNum, true);
+							socketOut.writeObject(rcsMsg);
+
+							//read shard server reply message
+							ObjectInputStream socketIn = new ObjectInputStream(socket.getInputStream());
+							Message replyMsg = (Message) socketIn.readObject();
+							socket.close();
+
+							if(replyMsg.getMsgType() == Message.ERROR_MSG) {
+								LOGGER.severe(((ErrorMsg)replyMsg).getMsg());
+								return;
+							} else if(replyMsg.getMsgType() != Message.REPLY_SHARD_SERVER_MSG) {
+								LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.REPLY_SHARD_SERVER_MSG + "' and recieved '" + replyMsg.getMsgType() + "'");
+								return;
+							}
+
+							//send write shard message
+							ShardServerMetadata shardServerMetadata = ((ReplyShardServerMsg) replyMsg).getShardServer();
+							WriteShardMsg wsMsg = new WriteShardMsg(
+								filename,
+								chunkNum,
+								shardNum,
+								chunkLength,
+								shardBytes[shardNum],
+								eof,
+								timestamp
+							);
+
+							Socket shardServerSocket = new Socket(shardServerMetadata.getInetAddress(), shardServerMetadata.getPort());
+							ObjectOutputStream shardServerOut = new ObjectOutputStream(shardServerSocket.getOutputStream());
+							shardServerOut.writeObject(wsMsg);
+							shardServerSocket.close();
+						}
+
+						//clear chunkBytes
+						for(int i=0; i<chunkBytes.length; i++) {
+							chunkBytes[i] = 0;
+						}
 
 						chunkNum++;
 					}
@@ -121,7 +142,6 @@ public class Client {
 					try {
 						System.out.print("\tFilename:");
 						filename = scanner.nextLine();
-						in = new FileInputStream(new File(filename));
 
 						System.out.print("\tOutputDirectory:");
 						File file = new File(scanner.nextLine() + filename);
@@ -136,35 +156,39 @@ public class Client {
 					}
 
 					boolean eof = false;
-					int chunkNum = 0;
+					int length = 0, chunkNum = 0;
+					byte[][] shardBytes = new byte[TOTAL_SHARDS][];
+					boolean[] shardPresent = new boolean[TOTAL_SHARDS];
 					while(!eof) {
-						//write request chunk servers for filename
-						Socket socket = new Socket(controllerHostName, controllerPort);
-						ObjectOutputStream socketOut = new ObjectOutputStream(socket.getOutputStream());
-						RequestChunkServerMsg rcsMsg = new RequestChunkServerMsg(filename, chunkNum, false);
-						socketOut.writeObject(rcsMsg);
+						int shardCount = 0;
+						for(int shardNum=0; shardNum<shardBytes.length; shardNum++) {
+							//write request shard servers
+							Socket socket = new Socket(controllerHostName, controllerPort);
+							ObjectOutputStream socketOut = new ObjectOutputStream(socket.getOutputStream());
+							RequestShardServerMsg rssMsg = new RequestShardServerMsg(filename, chunkNum, shardNum, false);
+							socketOut.writeObject(rssMsg);
 
-						//read request chunk servers
-						ObjectInputStream socketIn = new ObjectInputStream(socket.getInputStream());
-						Message replyMsg = (Message) socketIn.readObject();
-						socket.close();
+							//read request chunk servers
+							ObjectInputStream socketIn = new ObjectInputStream(socket.getInputStream());
+							Message replyMsg = (Message) socketIn.readObject();
+							socket.close();
 
-						if(replyMsg.getMsgType() == Message.ERROR_MSG) {
-							LOGGER.severe(((ErrorMsg)replyMsg).getMsg());
-							return;
-						} else if(replyMsg.getMsgType() != Message.REPLY_CHUNK_SERVER_MSG) {
-							LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.REPLY_CHUNK_SERVER_MSG + "' and recieved '" + replyMsg.getMsgType() + "'");
-							return;
-						}
+							if(replyMsg.getMsgType() == Message.ERROR_MSG) {
+								LOGGER.severe(((ErrorMsg)replyMsg).getMsg());
+								shardBytes[shardNum] = new byte[SHARD_SIZE];
+								shardPresent[shardNum] = false;
+								continue;
+							} else if(replyMsg.getMsgType() != Message.REPLY_SHARD_SERVER_MSG) {
+								LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.REPLY_SHARD_SERVER_MSG + "' and recieved '" + replyMsg.getMsgType() + "'");
+								return;
+							}
 
-						//request chunks from chunk servers
-						List<ChunkServerMetadata> chunkServers = ((ReplyChunkServerMsg) replyMsg).getChunkServers();
-						RequestChunkMsg rcMsg = new RequestChunkMsg(filename, chunkNum);
-						boolean success = false;
-						for(int i=0; i<chunkServers.size(); i++) {
-							Socket clientSocket = new Socket(chunkServers.get(i).getInetAddress(), chunkServers.get(i).getPort());
+							//request chunks from chunk servers
+							ShardServerMetadata shardServerMetadata = ((ReplyShardServerMsg) replyMsg).getShardServer();
+							RequestShardMsg rsMsg = new RequestShardMsg(filename, chunkNum, shardNum);
+							Socket clientSocket = new Socket(shardServerMetadata.getInetAddress(), shardServerMetadata.getPort());
 							ObjectOutputStream clientOut = new ObjectOutputStream(clientSocket.getOutputStream());
-							clientOut.writeObject(rcMsg);
+							clientOut.writeObject(rsMsg);
 
 							ObjectInputStream clientIn = new ObjectInputStream(clientSocket.getInputStream());
 							replyMsg = (Message) clientIn.readObject();
@@ -172,25 +196,38 @@ public class Client {
 
 							if(replyMsg.getMsgType() == Message.ERROR_MSG) {
 								LOGGER.severe(((ErrorMsg)replyMsg).getMsg());
+								shardBytes[shardNum] = new byte[SHARD_SIZE];
+								shardPresent[shardNum] = false;
 								continue;
-							} else if(replyMsg.getMsgType() != Message.REPLY_CHUNK_MSG) {
-								LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.REPLY_CHUNK_MSG + "' and recieved '" + replyMsg.getMsgType() + "'");
+							} else if(replyMsg.getMsgType() != Message.REPLY_SHARD_MSG) {
+								LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.REPLY_SHARD_MSG + "' and recieved '" + replyMsg.getMsgType() + "'");
 								continue;
 							}
 
-							//write chunk out to file
-							byte[] bytes = ((ReplyChunkMsg) replyMsg).getBytes();
-							LOGGER.info("Chunk '" + filename + ":" + chunkNum + "' has length '" + bytes.length + "'");
-							out.write(bytes);
+							//parse reply message
+							ReplyShardMsg replysMsg = (ReplyShardMsg) replyMsg;
+							shardBytes[shardNum] = replysMsg.getBytes();
+							eof = replysMsg.getEof();
+							length = replysMsg.getLength();
 
-							eof = ((ReplyChunkMsg) replyMsg).getEof();
-							success = true;
-							break;
+							shardPresent[shardNum] = true;
+							shardCount++;
 						}
 
-						if(!success) {
-							LOGGER.severe("Unable to retreive file '" + filename + "'");
+						if(shardCount < DATA_SHARDS) {
+							LOGGER.severe("Unable to reconstruct chunk '" + filename + ":" + chunkNum + "'. " + shardCount + " shards were found and " + DATA_SHARDS + " are needed.");
 							return;
+						}
+
+						//reconstruct chunk from erasure closure bytes
+						ReedSolomon reedSolomon = ReedSolomon.create(DATA_SHARDS, PARITY_SHARDS);
+						reedSolomon.decodeMissing(shardBytes, shardPresent, 0, SHARD_SIZE);
+
+						//write chunk out to file
+						for(int i=0; i<shardBytes.length; i++) {
+							for(int j=0; j<shardBytes[i].length && j<length-(i*SHARD_SIZE); j++) {
+								out.write(shardBytes[i][j]);
+							}
 						}
 
 						chunkNum++;

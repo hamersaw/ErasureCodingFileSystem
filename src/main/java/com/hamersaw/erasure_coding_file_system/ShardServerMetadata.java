@@ -4,12 +4,12 @@ import java.io.Serializable;
 
 import java.net.InetAddress;
 
-public class ChunkServerMetadata implements Comparable<ChunkServerMetadata>, Serializable {
+public class ShardServerMetadata implements Comparable<ShardServerMetadata>, Serializable {
 	private InetAddress inetAddress;
 	private int port, totalChunks;
 	private long freeSpace;
 
-	public ChunkServerMetadata(InetAddress inetAddress, int port, int totalChunks, long freeSpace) {
+	public ShardServerMetadata(InetAddress inetAddress, int port, int totalChunks, long freeSpace) {
 		this.inetAddress = inetAddress;
 		this.port = port;
 		this.totalChunks = totalChunks;
@@ -17,7 +17,7 @@ public class ChunkServerMetadata implements Comparable<ChunkServerMetadata>, Ser
 	}
 
 	@Override
-	public int compareTo(ChunkServerMetadata chunkServerMetadata) {
+	public int compareTo(ShardServerMetadata chunkServerMetadata) {
 		//compare inetAddress
 		int hostAddress = inetAddress.getHostAddress().compareTo(chunkServerMetadata.getInetAddress().getHostAddress());
 		int hostName = inetAddress.getHostName().compareTo(chunkServerMetadata.getInetAddress().getHostName());

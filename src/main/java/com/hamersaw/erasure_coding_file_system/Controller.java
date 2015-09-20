@@ -7,46 +7,40 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.logging.Logger;
 import java.util.Map;
-import java.util.Random;
 import java.util.Timer;
 import java.util.TimerTask;
 
 import com.hamersaw.erasure_coding_file_system.message.ControllerHeartbeatMsg;
 import com.hamersaw.erasure_coding_file_system.message.ErrorMsg;
-import com.hamersaw.erasure_coding_file_system.message.ForwardChunkMsg;
 import com.hamersaw.erasure_coding_file_system.message.Message;
-import com.hamersaw.erasure_coding_file_system.message.RequestChunkServerMsg;
-import com.hamersaw.erasure_coding_file_system.message.ReplyChunkServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.RequestShardServerMsg;
+import com.hamersaw.erasure_coding_file_system.message.ReplyShardServerMsg;
 
 public class Controller implements Runnable {
 	private static final Logger LOGGER = Logger.getLogger(Controller.class.getCanonicalName());
-	protected int port, replicationCount;
+	protected int port;
 	protected boolean stopped;
 	protected ServerSocket serverSocket;
-	protected List<ChunkServerMetadata> chunkServers;
-	protected Map<String,Map<Integer,List<ChunkServerMetadata>>> chunks;
+	protected List<ShardServerMetadata> shardServers;
+	protected Map<String,Map<Integer,Map<Integer,ShardServerMetadata>>> shards;
 
-	public Controller(int port, int replicationCount) {
+	public Controller(int port) {
 		this.port = port;
-		this.replicationCount = replicationCount;
 		stopped = false;
-		chunkServers = new LinkedList<ChunkServerMetadata>();
-		chunks = new HashMap<String,Map<Integer,List<ChunkServerMetadata>>>();
+		shardServers = new LinkedList<ShardServerMetadata>();
+		shards = new HashMap<String,Map<Integer,Map<Integer,ShardServerMetadata>>>();
 	}
 
 	public static void main(String[] args) {
 		try {
 			int port = Integer.parseInt(args[0]);
-			int replicationCount = Integer.parseInt(args[1]);
 
-			new Thread(new Controller(port, replicationCount)).start();
+			new Thread(new Controller(port)).start();
 		} catch(Exception e) {
 			System.out.println("Usage: Controller port replicationCount");
 			System.exit(1);
@@ -80,123 +74,85 @@ public class Controller implements Runnable {
 		}
 	}
 
-	public synchronized void updateChunkServer(ChunkServerMetadata chunkServerMetadata, Map<String,List<Integer>> chunkServerChunks) {
-		//search for chunk server
+	public synchronized void updateShardServer(ShardServerMetadata shardServerMetadata, Map<String,Map<Integer,List<Integer>>> shardServerShards) {
+		//search for shard server
 		boolean found = false;
-		for(ChunkServerMetadata chunkServer : chunkServers) {
-			if(chunkServer.compareTo(chunkServerMetadata) == 0) {
-				chunkServer.setTotalChunks(chunkServerMetadata.getTotalChunks());
-				chunkServer.setFreeSpace(chunkServerMetadata.getFreeSpace());
-				chunkServerMetadata = chunkServer;
+		for(ShardServerMetadata shardServer : shardServers) {
+			if(shardServer.compareTo(shardServerMetadata) == 0) {
+				shardServer.setTotalChunks(shardServerMetadata.getTotalChunks());
+				shardServer.setFreeSpace(shardServerMetadata.getFreeSpace());
+				shardServerMetadata = shardServer;
 				found = true;
 				break;
 			}
 		}
 
 		if(!found) {
-			LOGGER.info("Adding ChunkServer '" + chunkServerMetadata + "'");
-			chunkServers.add(chunkServerMetadata);
+			LOGGER.info("Adding ShardServer '" + shardServerMetadata + "'");
+			shardServers.add(shardServerMetadata);
 		}
 
-		//update chunks
-		for(String filename : chunkServerChunks.keySet()) {
-			for(int chunkNum : chunkServerChunks.get(filename)) {
-				//search for filename
-				Map<Integer,List<ChunkServerMetadata>> chunkNums = chunks.get(filename);
-				if(chunks.containsKey(filename)) {
-					chunkNums = chunks.get(filename);
-				} else {
-					chunkNums = new HashMap<Integer,List<ChunkServerMetadata>>();
-					chunks.put(filename, chunkNums);
-				}
+		//update shards
+		for(String filename : shardServerShards.keySet()) {
+			for(int chunkNum : shardServerShards.get(filename).keySet()) {
+				for(int shardNum : shardServerShards.get(filename).get(chunkNum)) {
+					//search for filename
+					Map<Integer,Map<Integer,ShardServerMetadata>> chunkNums;
+					if(shards.containsKey(filename)) {
+						chunkNums = shards.get(filename);
+					} else {
+						chunkNums = new HashMap<Integer,Map<Integer,ShardServerMetadata>>();
+						shards.put(filename, chunkNums);
+					}
 
-				//search for chunk number
-				List<ChunkServerMetadata> chunkServers;
-				if(chunkNums.containsKey(chunkNum)) {
-					chunkServers = chunkNums.get(chunkNum);
-				} else {
-					chunkServers = new LinkedList<ChunkServerMetadata>();
-					chunkNums.put(chunkNum, chunkServers);
-				}
+					//search for chunk number
+					Map<Integer,ShardServerMetadata> shards;
+					if(chunkNums.containsKey(chunkNum)) {
+						shards = chunkNums.get(chunkNum);
+					} else {
+						shards = new HashMap<Integer,ShardServerMetadata>();
+						chunkNums.put(chunkNum, shards);
+					}
 
-				//add chunk server if needed
-				if(!chunkServers.contains(chunkServerMetadata)) {
-					LOGGER.info("Chunk '" + filename + ":" + chunkNum + "' registered for chunk server '" + chunkServerMetadata + "'");
-					chunkServers.add(chunkServerMetadata);
-				}
-			}
-		}
-	}
-
-	public void removeChunk(String filename, int chunkNum, InetAddress inetAddress, int port) throws Exception {
-		Map<Integer,List<ChunkServerMetadata>> map;
-		if(chunks.containsKey(filename)) {
-			map = chunks.get(filename);
-		} else {
-			throw new Exception("File '" + filename + "' not found in chunk cache");
-		}
-
-		List<ChunkServerMetadata> list;
-		if(map.containsKey(chunkNum)) {
-			list = map.get(chunkNum);
-		} else {
-			throw new Exception("Chunk '" + filename + ":" + chunkNum + "' not found in chunk cache");
-		}
-
-		//loop through chunk servers to delete
-		for(int i=0; i<list.size(); i++) {
-			ChunkServerMetadata chunkServerMetadata = list.get(i);
-			int hostName = inetAddress.getHostName().compareTo(chunkServerMetadata.getInetAddress().getHostName());
-			int hostAddress = inetAddress.getHostAddress().compareTo(chunkServerMetadata.getInetAddress().getHostAddress());
-
-			if(port == chunkServerMetadata.getPort() && (hostName == 0 || hostAddress == 0)) {
-				list.remove(i);
-				break;
-			}
-		}
-	}
-
-	public List<ChunkServerMetadata> requestChunkServers(String filename, int chunkNum, boolean writeOperation) throws Exception{
-		List<ChunkServerMetadata> list = new LinkedList<ChunkServerMetadata>();
-		if(chunks.containsKey(filename) && chunks.get(filename).containsKey(chunkNum)) {
-			for(ChunkServerMetadata chunkServerMetadata : chunks.get(filename).get(chunkNum)) {
-				list.add(chunkServerMetadata);
-			}
-		} else if(!writeOperation) {
-			throw new Exception("Chunk '" + filename + ":" + chunkNum + "' not found in any chunk servers.");
-		} else if(chunkServers.size() < replicationCount) {
-			throw new Exception("Not enough chunk servers to fulfil replication requirement. '" + chunkServers.size() + "' found '" + replicationCount + "' required.");
-		} else {
-			Collections.sort(
-				chunkServers,
-				new Comparator<ChunkServerMetadata>() {
-					@Override
-					public int compare(ChunkServerMetadata c1, ChunkServerMetadata c2) {
-						if(c1.getFreeSpace() > c2.getFreeSpace()) {
-							return -1;
-						} else if(c1.getFreeSpace() < c2.getFreeSpace()) {
-							return 1;
-						} else {
-							return 0;
+					//search for shard number
+					if(shards.containsKey(shardNum)) {
+						if(!shards.get(shardNum).equals(shardServerMetadata)) {
+							LOGGER.severe("Attempting to register a duplication of shard '" + filename + ":" + chunkNum + ":" + shardNum + ")");
 						}
+					} else {
+						LOGGER.info("Registering shard '" + filename + ":" + chunkNum + ":" + shardNum + "' to server '" + shardServerMetadata.getInetAddress() + ":" + shardServerMetadata.getPort() + "'");
+						shards.put(shardNum, shardServerMetadata);
 					}
 				}
-			);
+			}
+		}
+	}
 
-			List<ChunkServerMetadata> chunkServerList = new LinkedList<ChunkServerMetadata>();
-			for(int i=0; i<replicationCount; i++) {
-				list.add(chunkServers.get(i));
+	public ShardServerMetadata requestShardServer(String filename, int chunkNum, int shardNum,  boolean writeOperation) throws Exception{
+		ShardServerMetadata shardServerMetadata;
+		if(shards.containsKey(filename) && shards.get(filename).containsKey(chunkNum) && shards.get(filename).get(chunkNum).containsKey(shardNum)) {
+			shardServerMetadata  = shards.get(filename).get(chunkNum).get(shardNum);
+		} else if(!writeOperation) {
+			throw new Exception("Shard '" + filename + ":" + chunkNum + ":" + shardNum + "' not found in any shard servers.");
+		} else if(shardServers.size() == 0) {
+			throw new Exception("No shard servers have been registered yet.");
+		} else {
+			shardServerMetadata = shardServers.get(0);
+			long freeSpace = shardServerMetadata.getFreeSpace();
+			for(int i=1; i<shardServers.size(); i++) {
+				if(shardServers.get(i).getFreeSpace() > freeSpace) {
+					shardServerMetadata = shardServers.get(i);
+					freeSpace = shardServerMetadata.getFreeSpace();
+				}
 			}
 		}
 
-		//update free space on chunk server if write operation
+		//update free space if write operation
 		if(writeOperation) {
-			for(ChunkServerMetadata chunkServerMetadata : list) {
-				chunkServerMetadata.setFreeSpace(chunkServerMetadata.getFreeSpace() - 1);
-			}
+			shardServerMetadata.setFreeSpace(shardServerMetadata.getFreeSpace() - 1);
 		}
-
-		return list;
+		
+		return shardServerMetadata;
 	}
 
 	public synchronized void stop() {
@@ -208,82 +164,45 @@ public class Controller implements Runnable {
 	}
 
 	class HeartbeatTask extends TimerTask {
-		private Random rand;
-
-		public HeartbeatTask() {
-			rand = new Random();
-		}
-
 		@Override
 		public void run() {
-			List<ChunkServerMetadata> unreachableList = new LinkedList<ChunkServerMetadata>();
-			for(ChunkServerMetadata chunkServerMetadata : chunkServers) {
+			List<ShardServerMetadata> unreachableList = new LinkedList<ShardServerMetadata>();
+			for(ShardServerMetadata shardServerMetadata : shardServers) {
 				try {
 					//open a socket
-					Socket socket = new Socket(chunkServerMetadata.getInetAddress(), chunkServerMetadata.getPort());
+					Socket socket = new Socket(shardServerMetadata.getInetAddress(), shardServerMetadata.getPort());
 
 					//send a heartbeat message
 					ControllerHeartbeatMsg message = new ControllerHeartbeatMsg();
 					ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
 					out.writeObject(message);
 				} catch(Exception e) {
-					LOGGER.info("Remove chunk server '" + chunkServerMetadata + "'. Host unreachable.");
-
-					unreachableList.add(chunkServerMetadata);
+					unreachableList.add(shardServerMetadata);
+					LOGGER.info("Remove shard server '" + shardServerMetadata + "'. Host unreachable.");
 				}
 			}
 
 			//remove unreachable chunk servers
-			for(ChunkServerMetadata chunkServerMetadata : unreachableList) {
-				chunkServers.remove(chunkServerMetadata);
+			for(ShardServerMetadata shardServerMetadata : unreachableList) {
+				shardServers.remove(shardServerMetadata);
 
-				for(String filename : chunks.keySet()) {
-					for(int chunkNum : chunks.get(filename).keySet()) {
-						List<ChunkServerMetadata> list = chunks.get(filename).get(chunkNum);
+				//remove shards
+				List<Integer> shardRemoveList = new LinkedList<Integer>();
+				for(String filename : shards.keySet()) {
+					for(int chunkNum : shards.get(filename).keySet()) {
+						Map<Integer,ShardServerMetadata> map = shards.get(filename).get(chunkNum);
 
-						if(list.contains(chunkServerMetadata)) {
-							list.remove(chunkServerMetadata);
-
-							try {
-								ChunkServerMetadata forwardChunkServer = list.get(rand.nextInt(list.size()));
-							
-								boolean success = false;
-								for(ChunkServerMetadata writeChunkServer : chunkServers) {
-									if(list.contains(writeChunkServer)) {
-										continue;
-									}
-
-									ForwardChunkMsg fcMsg = new ForwardChunkMsg(filename, chunkNum, writeChunkServer.getInetAddress(), writeChunkServer.getPort());
-
-									//send forward chunk message
-									Socket clientSocket = new Socket(forwardChunkServer.getInetAddress(), forwardChunkServer.getPort());
-									ObjectOutputStream socketOut = new ObjectOutputStream(clientSocket.getOutputStream());
-									socketOut.writeObject(fcMsg);
-
-									//read response messasge
-									ObjectInputStream socketIn = new ObjectInputStream(clientSocket.getInputStream());
-									Message message = (Message) socketIn.readObject();
-
-									if(message.getMsgType() == Message.ERROR_MSG) {
-										LOGGER.severe(((ErrorMsg)message).getMsg());
-										continue;
-									} else if(message.getMsgType() != Message.SUCCESS_MSG) {
-										LOGGER.severe("Unexpected message type returned. Was expecting '" + Message.SUCCESS_MSG + "' and recieved '" + message.getMsgType() + "'");
-										continue;
-									}
-
-									clientSocket.close();
-									success = true;
-									break;
-								}
-
-								if(!success) {
-									LOGGER.severe("Unable to redistribute chunk '" + filename + ":" + chunkNum + "'");
-								}
-							} catch(Exception e) {
-								LOGGER.severe(e.getMessage());
+						for(int shardNum : map.keySet()) {
+							if(map.get(shardNum).equals(shardServerMetadata)) {
+								shardRemoveList.add(shardNum);
 							}
 						}
+
+						for(int shardNum : shardRemoveList) {
+							map.remove(shardNum);
+						}
+
+						shardRemoveList.clear();
 					}
 				}
 			}

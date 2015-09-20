@@ -1,25 +1,20 @@
 package com.hamersaw.erasure_coding_file_system.message;
 
-import java.util.List;
-
-import com.hamersaw.erasure_coding_file_system.ChunkServerMetadata;
-
-public class WriteChunkMsg extends Message {
+public class ReplyShardMsg extends Message {
 	private String filename;
-	private int chunkNum, length;
+	private int chunkNum, shardNum, length;
 	private byte[] bytes;
 	private boolean eof;
 	private long timestamp;
-	private List<ChunkServerMetadata> chunkServers;
 
-	public WriteChunkMsg(String filename, int chunkNum, int length, byte[] bytes, boolean eof, long timestamp, List<ChunkServerMetadata> chunkServers) {
+	public ReplyShardMsg(String filename, int chunkNum, int shardNum, int length, byte[] bytes, boolean eof, long timestamp) {
 		this.filename = filename;
 		this.chunkNum = chunkNum;
+		this.shardNum = shardNum;
 		this.length = length;
 		this.bytes = bytes;
 		this.eof = eof;
 		this.timestamp = timestamp;
-		this.chunkServers = chunkServers;
 	}
 
 	public String getFilename() {
@@ -28,6 +23,10 @@ public class WriteChunkMsg extends Message {
 
 	public int getChunkNum() {
 		return chunkNum;
+	}
+
+	public int getShardNum() {
+		return shardNum;
 	}
 
 	public int getLength() {
@@ -46,12 +45,8 @@ public class WriteChunkMsg extends Message {
 		return timestamp;
 	}
 
-	public List<ChunkServerMetadata> getChunkServers() {
-		return chunkServers;
-	}
-
 	@Override
 	public int getMsgType() {
-		return WRITE_CHUNK_MSG;
+		return REPLY_SHARD_MSG;
 	}
 }

@@ -5,5 +5,5 @@ repositories {
 }
 
 dependencies {
-	compile files('lib/reed-solomon-erasure-coding.jar')
+	compile fileTree(dir: 'libs', include: ['*.jar'])
 }
