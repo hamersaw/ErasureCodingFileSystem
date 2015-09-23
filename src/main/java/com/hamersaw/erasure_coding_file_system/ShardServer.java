@@ -15,6 +15,8 @@ import java.net.Socket;
 
 import java.security.MessageDigest;
 
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -38,15 +40,22 @@ class ShardServer implements Runnable {
 	protected boolean stopped;
 	protected Map<String,Map<Integer,List<Integer>>> shards, newShards;
 	protected ServerSocket serverSocket;
+	private ReadWriteLock readWriteLock;
 
 	public ShardServer(String storageDirectory, String controllerHostName, int controllerPort, int port) {
-		this.storageDirectory = storageDirectory;
+		if(storageDirectory.endsWith(File.separator)) {
+			this.storageDirectory = storageDirectory.substring(0, storageDirectory.length() - 2);
+		} else {
+			this.storageDirectory = storageDirectory;
+		}
+
 		this.controllerHostName = controllerHostName;
 		this.controllerPort = controllerPort;
 		this.port = port;
 		stopped = false;
 		shards = new HashMap<String,Map<Integer,List<Integer>>>();
 		newShards = new HashMap<String,Map<Integer,List<Integer>>>();
+		readWriteLock = new ReentrantReadWriteLock();
 	}
 
 	public static void main(String[] args) {
@@ -88,101 +97,107 @@ class ShardServer implements Runnable {
 	}
 
 	public synchronized void writeShard(String filename, int chunkNum, int shardNum, int length, byte[] bytes, boolean eof, long timestamp) throws Exception{
-		//search for filename
-		Map<Integer,List<Integer>> chunks;
-		if(shards.containsKey(filename)) {
-			chunks = shards.get(filename);
-		} else {
-			chunks = new HashMap<Integer,List<Integer>>();
-			shards.put(filename, chunks);
-		}
+		readWriteLock.writeLock().lock();
+		try {
+			//search for filename
+			Map<Integer,List<Integer>> chunks;
+			if(shards.containsKey(filename)) {
+				chunks = shards.get(filename);
+			} else {
+				chunks = new HashMap<Integer,List<Integer>>();
+				shards.put(filename, chunks);
+			}
 
-		//search for chunk number
-		List<Integer> shardList;
-		if(chunks.containsKey(chunkNum)) {
-			shardList = chunks.get(chunkNum);
-		} else {
-			shardList = new LinkedList<Integer>();
-			chunks.put(chunkNum, shardList);
-		}
+			//search for chunk number
+			List<Integer> shardList;
+			if(chunks.containsKey(chunkNum)) {
+				shardList = chunks.get(chunkNum);
+			} else {
+				shardList = new LinkedList<Integer>();
+				chunks.put(chunkNum, shardList);
+			}
 
-		//search for shard number
-		int version = 1;
-		if(shardList.contains(shardNum)) {
-			//check timestamp in file and increase version number and rewrite if need be
-			try {
-				File file = new File(storageDirectory + filename + "_chunk" + chunkNum + "_shard" + shardNum);
-				DataInputStream in = new DataInputStream(new FileInputStream(file));
+			//search for shard number
+			int version = 1;
+			if(shardList.contains(shardNum)) {
+				//check timestamp in file and increase version number and rewrite if need be
+				try {
+					File file = new File(getFilename(storageDirectory, filename, chunkNum, shardNum));
+					DataInputStream in = new DataInputStream(new FileInputStream(file));
+	
+					version = in.readInt();
+					long shardTimestamp = in.readLong();
+					in.close();
 
-				version = in.readInt();
-				long shardTimestamp = in.readLong();
-				in.close();
-
-				if(shardTimestamp < timestamp) {
-					version++;
-					file.delete();
-				} else {
+					if(shardTimestamp < timestamp) {
+						version++;
+						file.delete();
+					} else {
+						return;
+					}
+				} catch(Exception e) {
+					LOGGER.severe("Unknown error writing shard '" + filename + ":" + chunkNum + ":" + shardNum + "'. '" + e.getMessage() + "'.");
 					return;
 				}
-			} catch(Exception e) {
-				LOGGER.severe("Unknown error writing shard '" + filename + ":" + chunkNum + ":" + shardNum + "'. '" + e.getMessage() + "'.");
-				return;
+			} else {
+				shardList.add(shardNum);
 			}
-		} else {
-			shardList.add(shardNum);
+
+			//add to newShards
+			Map<Integer,List<Integer>> newChunks;
+			if(newShards.containsKey(filename)) {
+				newChunks = newShards.get(filename);
+			} else {
+				newChunks = new HashMap<Integer,List<Integer>>();
+				newShards.put(filename, newChunks);
+			}
+
+			List<Integer> shardsList;
+			if(newChunks.containsKey(chunkNum)) {
+				shardsList = newChunks.get(chunkNum);
+			} else {
+				shardsList = new LinkedList<Integer>();
+				newChunks.put(chunkNum, shardsList);
+			}
+
+			if(!shardsList.contains(shardNum)) {
+				shardsList.add(shardNum);
+			}
+
+			//create new file if needed
+			File file = new File(getFilename(storageDirectory, filename, chunkNum, shardNum));
+			file.getParentFile().mkdirs();
+			DataOutputStream out = new DataOutputStream(new FileOutputStream(file));
+
+			//write out metadata
+			out.writeInt(version);
+			out.writeLong(timestamp);
+			out.writeInt(chunkNum);
+			out.writeInt(shardNum);
+			out.writeInt(length);
+			out.writeBoolean(eof);
+
+			//write bytes
+			for(byte b : bytes) {
+				out.writeByte(b);
+			}
+
+			LOGGER.info("Wrote shard '" + filename + ":" + chunkNum + ":" + shardNum + "' - length:" + length + " eof:" + eof + " timestamp:" + timestamp);
+			out.close();
+		} finally {
+			readWriteLock.writeLock().unlock();
 		}
-
-		//add to newShards
-		Map<Integer,List<Integer>> newChunks;
-		if(newShards.containsKey(filename)) {
-			newChunks = newShards.get(filename);
-		} else {
-			newChunks = new HashMap<Integer,List<Integer>>();
-			newShards.put(filename, newChunks);
-		}
-
-		List<Integer> shardsList;
-		if(newChunks.containsKey(chunkNum)) {
-			shardsList = newChunks.get(chunkNum);
-		} else {
-			shardsList = new LinkedList<Integer>();
-			newChunks.put(chunkNum, shardsList);
-		}
-
-		if(!shardsList.contains(shardNum)) {
-			shardsList.add(shardNum);
-		}
-
-		//create new file if needed
-		File file = new File(storageDirectory + filename + "_chunk" + chunkNum + "_shard" + shardNum);
-		file.getParentFile().mkdirs();
-		DataOutputStream out = new DataOutputStream(new FileOutputStream(file));
-
-		//write out metadata
-		out.writeInt(version);
-		out.writeLong(timestamp);
-		out.writeInt(chunkNum);
-		out.writeInt(shardNum);
-		out.writeInt(length);
-		out.writeBoolean(eof);
-
-		//write bytes
-		for(byte b : bytes) {
-			out.writeByte(b);
-		}
-
-		LOGGER.info("Wrote chunk '" + filename + ":" + chunkNum + ":" + shardNum + "' - length:" + length + " eof:" + eof + " timestamp:" + timestamp);
-		out.close();
 	}
 
 	public synchronized Message requestShard(String filename, int chunkNum, int shardNum) throws Exception {
-		if(!shards.containsKey(filename) || !shards.get(filename).containsKey(chunkNum) || !shards.get(filename).get(chunkNum).contains(shardNum)) {
-			throw new Exception("Shard server doesn't contain chunk '" + filename + ":" + chunkNum + ":" + shardNum + "'");
-		}
-
-		//read in shard
+		readWriteLock.readLock().lock();
 		try {
-			File file = new File(storageDirectory + filename + "_chunk" + chunkNum + "_shard" + shardNum);
+			if(!shards.containsKey(filename) || !shards.get(filename).containsKey(chunkNum) || !shards.get(filename).get(chunkNum).contains(shardNum)) {
+				throw new Exception("Shard server doesn't contain shard '" + filename + ":" + chunkNum + ":" + shardNum + "'");
+			}
+
+			//read in shard
+			File file = new File(getFilename(storageDirectory, filename, chunkNum, shardNum));
 			if(!file.exists()) {
 				throw new Exception("");
 			}
@@ -204,9 +219,9 @@ class ShardServer implements Runnable {
 
 			in.close();
 			return new ReplyShardMsg(filename, chunkNum, shardNum, length, bytes, eof, timestamp);
-		} catch(Exception e) {
-			throw new Exception(e.getMessage());
-		}
+		} finally {
+			readWriteLock.readLock().unlock();
+		}	
 	}
 
 	public synchronized void stop() {
@@ -215,6 +230,14 @@ class ShardServer implements Runnable {
 
 	public boolean getStopped() {
 		return stopped;
+	}
+
+	private String getFilename(String storageDirectory, String filename, int chunkNum, int shardNum) {
+		if(filename.charAt(0) == File.separatorChar) {
+			return storageDirectory + filename + "_chunk" + chunkNum + "_shard" + shardNum;
+		} else {
+			return storageDirectory + File.separatorChar + filename + "_chunk" + chunkNum + "_shard" + shardNum;
+		}
 	}
 
 	class HeartbeatTask extends TimerTask {

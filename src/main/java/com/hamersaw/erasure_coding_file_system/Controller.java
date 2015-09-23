@@ -7,6 +7,8 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -28,12 +30,14 @@ public class Controller implements Runnable {
 	protected ServerSocket serverSocket;
 	protected List<ShardServerMetadata> shardServers;
 	protected Map<String,Map<Integer,Map<Integer,ShardServerMetadata>>> shards;
+	private ReadWriteLock readWriteLock;
 
 	public Controller(int port) {
 		this.port = port;
 		stopped = false;
 		shardServers = new LinkedList<ShardServerMetadata>();
 		shards = new HashMap<String,Map<Integer,Map<Integer,ShardServerMetadata>>>();
+		readWriteLock = new ReentrantReadWriteLock();
 	}
 
 	public static void main(String[] args) {
@@ -75,84 +79,94 @@ public class Controller implements Runnable {
 	}
 
 	public synchronized void updateShardServer(ShardServerMetadata shardServerMetadata, Map<String,Map<Integer,List<Integer>>> shardServerShards) {
-		//search for shard server
-		boolean found = false;
-		for(ShardServerMetadata shardServer : shardServers) {
-			if(shardServer.compareTo(shardServerMetadata) == 0) {
-				shardServer.setTotalChunks(shardServerMetadata.getTotalChunks());
-				shardServer.setFreeSpace(shardServerMetadata.getFreeSpace());
-				shardServerMetadata = shardServer;
-				found = true;
-				break;
+		readWriteLock.writeLock().lock();
+		try {
+			//search for shard server
+			boolean found = false;
+			for(ShardServerMetadata shardServer : shardServers) {
+				if(shardServer.compareTo(shardServerMetadata) == 0) {
+					shardServer.setTotalChunks(shardServerMetadata.getTotalChunks());
+					shardServer.setFreeSpace(shardServerMetadata.getFreeSpace());
+					shardServerMetadata = shardServer;
+					found = true;
+					break;
+				}
 			}
-		}
 
-		if(!found) {
-			LOGGER.info("Adding ShardServer '" + shardServerMetadata + "'");
-			shardServers.add(shardServerMetadata);
-		}
+			if(!found) {
+				LOGGER.info("Adding ShardServer '" + shardServerMetadata + "'");
+				shardServers.add(shardServerMetadata);
+			}
 
-		//update shards
-		for(String filename : shardServerShards.keySet()) {
-			for(int chunkNum : shardServerShards.get(filename).keySet()) {
-				for(int shardNum : shardServerShards.get(filename).get(chunkNum)) {
-					//search for filename
-					Map<Integer,Map<Integer,ShardServerMetadata>> chunkNums;
-					if(shards.containsKey(filename)) {
-						chunkNums = shards.get(filename);
-					} else {
-						chunkNums = new HashMap<Integer,Map<Integer,ShardServerMetadata>>();
-						shards.put(filename, chunkNums);
-					}
-
-					//search for chunk number
-					Map<Integer,ShardServerMetadata> shards;
-					if(chunkNums.containsKey(chunkNum)) {
-						shards = chunkNums.get(chunkNum);
-					} else {
-						shards = new HashMap<Integer,ShardServerMetadata>();
-						chunkNums.put(chunkNum, shards);
-					}
-
-					//search for shard number
-					if(shards.containsKey(shardNum)) {
-						if(!shards.get(shardNum).equals(shardServerMetadata)) {
-							LOGGER.severe("Attempting to register a duplication of shard '" + filename + ":" + chunkNum + ":" + shardNum + ")");
+			//update shards
+			for(String filename : shardServerShards.keySet()) {
+				for(int chunkNum : shardServerShards.get(filename).keySet()) {
+					for(int shardNum : shardServerShards.get(filename).get(chunkNum)) {
+						//search for filename
+						Map<Integer,Map<Integer,ShardServerMetadata>> chunkNums;
+						if(shards.containsKey(filename)) {
+							chunkNums = shards.get(filename);
+						} else {
+							chunkNums = new HashMap<Integer,Map<Integer,ShardServerMetadata>>();
+							shards.put(filename, chunkNums);
 						}
-					} else {
-						LOGGER.info("Registering shard '" + filename + ":" + chunkNum + ":" + shardNum + "' to server '" + shardServerMetadata.getInetAddress() + ":" + shardServerMetadata.getPort() + "'");
-						shards.put(shardNum, shardServerMetadata);
+	
+						//search for chunk number
+						Map<Integer,ShardServerMetadata> shards;
+						if(chunkNums.containsKey(chunkNum)) {
+							shards = chunkNums.get(chunkNum);
+						} else {
+							shards = new HashMap<Integer,ShardServerMetadata>();
+							chunkNums.put(chunkNum, shards);
+						}
+
+						//search for shard number
+						if(shards.containsKey(shardNum)) {
+							if(!shards.get(shardNum).equals(shardServerMetadata)) {
+								LOGGER.severe("Attempting to register a duplication of shard '" + filename + ":" + chunkNum + ":" + shardNum + ")");
+							}
+						} else {
+							LOGGER.info("Registering shard '" + filename + ":" + chunkNum + ":" + shardNum + "' to server '" + shardServerMetadata.getInetAddress() + ":" + shardServerMetadata.getPort() + "'");
+							shards.put(shardNum, shardServerMetadata);
+						}
 					}
 				}
 			}
+		} finally {
+			readWriteLock.writeLock().unlock();
 		}
 	}
 
 	public ShardServerMetadata requestShardServer(String filename, int chunkNum, int shardNum,  boolean writeOperation) throws Exception{
-		ShardServerMetadata shardServerMetadata;
-		if(shards.containsKey(filename) && shards.get(filename).containsKey(chunkNum) && shards.get(filename).get(chunkNum).containsKey(shardNum)) {
-			shardServerMetadata  = shards.get(filename).get(chunkNum).get(shardNum);
-		} else if(!writeOperation) {
-			throw new Exception("Shard '" + filename + ":" + chunkNum + ":" + shardNum + "' not found in any shard servers.");
-		} else if(shardServers.size() == 0) {
-			throw new Exception("No shard servers have been registered yet.");
-		} else {
-			shardServerMetadata = shardServers.get(0);
-			long freeSpace = shardServerMetadata.getFreeSpace();
-			for(int i=1; i<shardServers.size(); i++) {
-				if(shardServers.get(i).getFreeSpace() > freeSpace) {
-					shardServerMetadata = shardServers.get(i);
-					freeSpace = shardServerMetadata.getFreeSpace();
+		readWriteLock.readLock().lock();
+		try {
+			ShardServerMetadata shardServerMetadata;
+			if(shards.containsKey(filename) && shards.get(filename).containsKey(chunkNum) && shards.get(filename).get(chunkNum).containsKey(shardNum)) {
+				shardServerMetadata  = shards.get(filename).get(chunkNum).get(shardNum);
+			} else if(!writeOperation) {
+				throw new Exception("Shard '" + filename + ":" + chunkNum + ":" + shardNum + "' not found in any shard servers.");
+			} else if(shardServers.size() == 0) {
+				throw new Exception("No shard servers have been registered yet.");
+			} else {
+				shardServerMetadata = shardServers.get(0);
+				long freeSpace = shardServerMetadata.getFreeSpace();
+				for(int i=1; i<shardServers.size(); i++) {
+					if(shardServers.get(i).getFreeSpace() > freeSpace) {
+						shardServerMetadata = shardServers.get(i);
+						freeSpace = shardServerMetadata.getFreeSpace();
+					}
 				}
 			}
-		}
 
-		//update free space if write operation
-		if(writeOperation) {
-			shardServerMetadata.setFreeSpace(shardServerMetadata.getFreeSpace() - 1);
-		}
+			//update free space if write operation
+			if(writeOperation) {
+				shardServerMetadata.setFreeSpace(shardServerMetadata.getFreeSpace() - 1);
+			}
 		
-		return shardServerMetadata;
+			return shardServerMetadata;
+		} finally {
+			readWriteLock.readLock().unlock();
+		}
 	}
 
 	public synchronized void stop() {
@@ -184,26 +198,31 @@ public class Controller implements Runnable {
 
 			//remove unreachable chunk servers
 			for(ShardServerMetadata shardServerMetadata : unreachableList) {
-				shardServers.remove(shardServerMetadata);
+				readWriteLock.writeLock().lock();
+				try {
+					shardServers.remove(shardServerMetadata);
 
-				//remove shards
-				List<Integer> shardRemoveList = new LinkedList<Integer>();
-				for(String filename : shards.keySet()) {
-					for(int chunkNum : shards.get(filename).keySet()) {
-						Map<Integer,ShardServerMetadata> map = shards.get(filename).get(chunkNum);
+					//remove shards
+					List<Integer> shardRemoveList = new LinkedList<Integer>();
+					for(String filename : shards.keySet()) {
+						for(int chunkNum : shards.get(filename).keySet()) {
+							Map<Integer,ShardServerMetadata> map = shards.get(filename).get(chunkNum);
 
-						for(int shardNum : map.keySet()) {
-							if(map.get(shardNum).equals(shardServerMetadata)) {
-								shardRemoveList.add(shardNum);
+							for(int shardNum : map.keySet()) {
+								if(map.get(shardNum).equals(shardServerMetadata)) {
+									shardRemoveList.add(shardNum);
+								}
 							}
-						}
 
-						for(int shardNum : shardRemoveList) {
-							map.remove(shardNum);
-						}
+							for(int shardNum : shardRemoveList) {
+								map.remove(shardNum);
+							}
 
-						shardRemoveList.clear();
+							shardRemoveList.clear();
+						}
 					}
+				} finally {
+					readWriteLock.writeLock().unlock();
 				}
 			}
 		}
